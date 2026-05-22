@@ -3,188 +3,126 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Detector Inteligente Automático de Muros</title>
+    <title>Levantamiento Automático por Movimiento</title>
     <style>
-        body { margin: 0; padding: 0; background: #000; font-family: sans-serif; color: #fff; overflow: hidden; }
-        #app-container { width: 100vw; height: 100vh; position: relative; display: flex; flex-direction: column; }
-        #video-preview { width: 100%; height: 40vh; position: relative; background: #111; border-bottom: 2px solid #333; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        #canvas-preview { width: 100%; height: 60vh; background: #151515; position: relative; }
+        body { margin: 0; padding: 0; background: #111; font-family: sans-serif; color: #fff; overflow: hidden; }
+        #app { display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+        #camera-area { width: 100%; height: 40vh; background: #000; position: relative; }
+        video { width: 100%; height: 100%; object-fit: cover; opacity: 0.6; }
+        #canvas-area { width: 100%; height: 60vh; background: #1a1a1a; position: relative; border-top: 2px solid #333; }
         canvas { width: 100%; height: 100%; }
-        .ui-status { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.85); padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: bold; border: 1px solid #444; display: flex; align-items: center; gap: 8px; z-index: 10; }
-        .dot { width: 10px; height: 10px; background: #dc3545; border-radius: 50%; }
+        .status-bar { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 12px; border: 1px solid #444; z-index: 10; }
+        .controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 10; }
+        button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 14px; font-weight: bold; border-radius: 20px; cursor: pointer; }
+        #btn-win { background: #00a8ff; }
+        #btn-clear { background: #dc3545; }
     </style>
-    <script async src="https://docs.opencv.org/4.5.4/opencv.js" type="text/javascript" id="opencv-core"></script>
 </head>
 <body>
 
-    <div id="app-container">
-        <div id="video-preview">
-            <div class="ui-status">
-                <div class="dot" id="status-dot"></div>
-                <span id="status-text">Iniciando IA...</span>
-            </div>
+    <div id="app">
+        <div id="camera-area">
+            <div class="status-bar">🎯 Modo: Rastreo de Muros Activo</div>
             <video id="webcam" autoplay playsinline muted></video>
         </div>
-
-        <div id="canvas-preview">
-            <canvas id="plano2d"></canvas>
+        <div id="canvas-area">
+            <canvas id="plano"></canvas>
+            <div class="controls">
+                <button id="btn-win">Marcar Ventana aquí</button>
+                <button id="btn-clear">Reiniciar</button>
+            </div>
         </div>
     </div>
 
     <script>
         const video = document.getElementById('webcam');
-        const canvas = document.getElementById('plano2d');
+        const canvas = document.getElementById('plano');
         const ctx = canvas.getContext('2d');
         
-        let src, dst, edges, lines;
-        let aiReady = false;
-        let murosDetectados = [];
+        let puntos = [];
+        let xActual, yActual;
 
-        // Cambiar estado cuando la Inteligencia Artificial esté completamente cargada
-        document.getElementById('opencv-core').onload = () => {
-            document.getElementById('status-dot').style.backgroundColor = '#28a745';
-            document.getElementById('status-text').innerText = 'IA: ESCANEANDO MUROS Y VENTANAS';
-            aiReady = true;
-            verificarEstructuras();
-        };
-
-        async function encenderCamara() {
+        async function iniciarCamara() {
             try {
-                // Forzar uso de cámara trasera y pedir resolución limpia
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } },
-                    audio: false
+                    video: { facingMode: { exact: "environment" } }, audio: false
                 });
                 video.srcObject = stream;
-            } catch (err) {
-                // Fallback si estás probando desde PC con webcam frontal
+            } catch (e) {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 video.srcObject = stream;
             }
         }
 
-        function adaptarLienzo() {
+        function ajustarLienzo() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
+            xActual = canvas.width / 2;
+            yActual = canvas.height * 0.7; // Empezar abajo al centro
+            puntos = [{ x: xActual, y: yActual, tipo: 'muro' }];
+            dibujarPlano();
         }
 
-        function verificarEstructuras() {
-            if (!aiReady || video.readyState !== video.HAVE_ENOUGH_DATA) {
-                setTimeout(verificarEstructuras, 100);
-                return;
+        // INTELIGENCIA POR SENSOR: Detecta el giro físico del teléfono en el espacio
+        window.addEventListener('deviceorientation', (event) => {
+            if (event.alpha === null) return; // Si no hay sensor disponible
+
+            // Usamos el giro horizontal (alpha) para calcular la dirección del muro
+            let alfaRad = (event.alpha * Math.PI) / 180;
+            
+            // Distancia de avance simulada por el tiempo de grabación
+            let velocidad = 0.4; 
+            
+            xActual += Math.sin(alfaRad) * velocidad;
+            yActual -= Math.cos(alfaRad) * velocidad;
+
+            // Restringir que no se salga de la pantalla
+            xActual = Math.max(10, Math.min(canvas.width - 10, xActual));
+            yActual = Math.max(10, Math.min(canvas.height - 10, yActual));
+
+            // Para evitar saturar, agregamos un punto estructural cada pocos cuadros
+            if (Math.random() < 0.15) {
+                puntos.push({ x: xActual, y: yActual, tipo: 'muro' });
             }
+            dibujarPlano();
+        });
 
-            // Inicializar matrices de memoria de visión por computadora
-            src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-            dst = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC1);
-            edges = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC1);
-            lines = new cv.Mat();
-
-            procesarVideoEnVivo();
-        }
-
-        function procesarVideoEnVivo() {
-            try {
-                // 1. Leer el fotograma actual del video
-                let cap = new cv.VideoCapture(video);
-                cap.read(src);
-
-                // 2. Convertir a escala de grises para eliminar colores, ropa y ruido visual
-                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-
-                // 3. Algoritmo Canny: Filtra solo las líneas estructurales de alto contraste (muros)
-                cv.Canny(dst, edges, 50, 150, 3);
-
-                // 4. Transformada de Hough: Identifica automáticamente líneas rectas continuas (muros y ventanas)
-                cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 30, 40, 10);
-
-                // Limpiar trazos viejos del plano temporal para actualizar en tiempo real
-                murosDetectados = [];
-
-                // 5. Analizar las líneas encontradas de forma inteligente
-                for (let i = 0; i < lines.rows; ++i) {
-                    let x1 = lines.data32S[i * 4];
-                    let y1 = lines.data32S[i * 4 + 1];
-                    let x2 = lines.data32S[i * 4 + 2];
-                    let y2 = lines.data32S[i * 4 + 3];
-
-                    // Calcular longitud y ángulo de la línea para verificar si es un muro o vano
-                    let dx = x2 - x1;
-                    let dy = y2 - y1;
-                    let longitud = Math.sqrt(dx*dx + dy*dy);
-
-                    // Si la línea es lo suficientemente larga, la app entiende de forma autónoma que es un elemento estructural
-                    if (longitud > 35) {
-                        // Proyectar coordenadas del video relativo a la pantalla 2D del plano inferior
-                        let px1 = (x1 / video.videoWidth) * canvas.width;
-                        let py1 = (y1 / video.videoHeight) * canvas.height;
-                        let px2 = (x2 / video.videoWidth) * canvas.width;
-                        let py2 = (y2 / video.videoHeight) * canvas.height;
-
-                        // Verificar si por intensidad de luz o líneas paralelas continuas califica como ventana
-                        let esVentana = (longitud > 40 && longitud < 120 && Math.abs(dy) < 15);
-
-                        murosDetectados.push({ x1: px1, y1: py1, x2: px2, y2: py2, ventana: esVentana });
-                    }
-                }
-
-                // Dibujar automáticamente el plano arquitectónico puro en 2D abajo
-                renderizarPlano2D();
-
-                // Mantener el ciclo de rastreo automático activo (~30 fps)
-                requestAnimationFrame(procesarVideoEnVivo);
-
-            } catch (error) {
-                // Si la cámara cambia de orientación, reajusta las matrices sin tumbar la app
-                setTimeout(verificarEstructuras, 100);
-            }
-        }
-
-        function renderizarPlano2D() {
+        function dibujarPlano() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (puntos.length < 2) return;
 
-            if (murosDetectados.length === 0) {
-                ctx.fillStyle = "#666";
-                ctx.font = "14px sans-serif";
-                ctx.textAlign = "center";
-                ctx.fillText("Mueve el video despacio enfocando los muros...", canvas.width / 2, canvas.height / 2);
-                return;
-            }
-
-            // Dibujar los elementos que la IA detecta de forma autónoma
-            murosDetectados.forEach(muro => {
+            // Dibujar la distribución de muros cortados en 2D puro
+            for (let i = 1; i < puntos.length; i++) {
                 ctx.beginPath();
-                ctx.moveTo(muro.x1, muro.y1);
-                ctx.lineTo(muro.x2, muro.y2);
+                ctx.moveTo(puntos[i-1].x, puntos[i-1].y);
+                ctx.lineTo(puntos[i].x, puntos[i].y);
 
-                if (muro.ventana) {
-                    // Símbolo de ventana en 2D puro: Doble línea azul/celeste delgada
+                if (puntos[i].tipo === 'ventana') {
+                    // Representación técnica 2D de ventana (Línea doble celeste)
                     ctx.strokeStyle = '#00a8ff';
-                    ctx.lineWidth = 2;
-                    ctx.stroke();
-                    
-                    // Línea paralela interna del vano
-                    ctx.beginPath();
-                    ctx.moveTo(muro.x1, muro.y1 + 4);
-                    ctx.lineTo(muro.x2, muro.y2 + 4);
+                    ctx.lineWidth = 3;
                     ctx.stroke();
                 } else {
-                    // Símbolo de muro de carga: Línea blanca sólida y gruesa (corte arquitectónico plano)
+                    // Representación técnica 2D de muro grueso (Línea blanca sólida)
                     ctx.strokeStyle = '#ffffff';
                     ctx.lineWidth = 6;
                     ctx.stroke();
                 }
-            });
+            }
         }
 
-        window.addEventListener('resize', () => {
-            adaptarLienzo();
+        document.getElementById('btn-win').addEventListener('click', () => {
+            puntos.push({ x: xActual, y: yActual, tipo: 'ventana' });
         });
 
+        document.getElementById('btn-clear').addEventListener('click', () => {
+            ajustarLienzo();
+        });
+
+        window.addEventListener('resize', ajustarLienzo);
         window.addEventListener('load', () => {
-            encenderCamara();
-            adaptarLienzo();
+            iniciarCamara();
+            ajustarLienzo();
         });
     </script>
 </body>
