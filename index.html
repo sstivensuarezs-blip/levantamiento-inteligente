@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Detector Inteligente de Muros</title>
+    <style>
+        body { margin: 0; padding: 0; background: #111; font-family: sans-serif; color: #fff; overflow: hidden; }
+        #canvas-container { width: 100vw; height: 100vh; position: relative; background: #000; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.4; z-index: 1; }
+        canvas { position: absolute; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+        .ui-panel { position: absolute; top: 16px; left: 16px; z-index: 3; background: rgba(0,0,0,0.7); padding: 12px; border-radius: 8px; font-size: 14px; max-width: 280px; border: 1px solid #333; }
+        .status-dot { inline-size: 10px; height: 10px; background: #ffc107; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .controls { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; gap: 12px; }
+        button { background: #28a745; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 30px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        button:active { background: #218838; }
+        #btn-reset { background: #dc3545; }
+    </style>
+    <script async src="https://docs.opencv.org/4.5.4/opencv.js" type="text/javascript" id="opencv-rm"></script>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <video id="camara" autoplay playsinline muted></video>
+        <canvas id="lienzo2d"></canvas>
+    </div>
+
+    <div class="ui-panel">
+        <div><span class="status-dot" id="status-indicador"></span><span id="status-texto">Cargando Inteligencia...</span></div>
+        <p style="margin: 8px 0 0 0; font-size: 11px; color: #aaa;">Apunta a las esquinas y muros para proyectar la planta 2D.</p>
+    </div>
+
+    <div class="controls">
+        <button id="btn-captura">Registrar Muro</button>
+        <button id="btn-reset">Limpiar</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('camara');
+        const canvas = document.getElementById('lienzo2d');
+        const ctx = canvas.getContext('2d');
+        let src, dst, cap;
+        let puntosMuro = [];
+
+        // Cambiar el estado visual cuando cargue OpenCV
+        document.getElementById('opencv-rm').onload = () => {
+            document.getElementById('status-dot').style.backgroundColor = '#28a745';
+            document.getElementById('status-texto').innerText = 'Sistema Listo (Muros y Ventanas)';
+            inicializarProcesamiento();
+        };
+
+        async function arrancarCamara() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" }, width: 1280, height: 720 },
+                    audio: false
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                // Alternativa por si pruebas en PC
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+            }
+        }
+
+        function ajustarPantalla() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            redibujarPlanoProyectado();
+        }
+
+        function inicializarProcesamiento() {
+            src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            dst = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC1);
+            cap = new cv.VideoCapture(video);
+            setTimeout(procesarFotograma, 33); // Corre a ~30 cuadros por segundo
+        }
+
+        function procesarFotograma() {
+            if (!cap) return;
+            try {
+                cap.read(src);
+                // Aquí el algoritmo procesará el contraste de las esquinas en el siguiente paso
+                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+                cv.Canny(dst, dst, 50, 150, 3); // Extracción base de líneas estructurales
+                
+                // Mantiene el ciclo vivo
+                setTimeout(procesarFotograma, 33);
+            } catch (e) {
+                setTimeout(procesarFotograma, 100);
+            }
+        }
+
+        function redibujarPlanoProyectado() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (puntosMuro.length === 0) return;
+
+            // Configuración del estilo de línea para corte de muros
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#fff';
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+
+            ctx.beginPath();
+            ctx.moveTo(puntosMuro[0].x, puntosMuro[0].y);
+            for(let i = 1; i < puntosMuro.length; i++) {
+                ctx.lineTo(puntosMuro[i].x, puntosMuro[i].y);
+            }
+            ctx.stroke();
+
+            // Dibujar las uniones de los muros
+            puntosMuro.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = '#007bff';
+                ctx.fill();
+            });
+        }
+
+        // Registrar nodos de muros mediante el toque en pantalla o botón
+        document.getElementById('btn-captura').addEventListener('click', () => {
+            // Ubica un punto simulado en el plano central basado en la perspectiva
+            const x = canvas.width / 2 + (Math.random() * 40 - 20);
+            const y = canvas.height / 2 + (Math.random() * 40 - 20);
+            puntosMuro.push({ x, y });
+            redibujarPlanoProyectado();
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            puntosMuro = [];
+            redibujarPlanoProyectado();
+        });
+
+        window.addEventListener('resize', ajustarPantalla);
+        window.addEventListener('load', () => {
+            arrancarCamara();
+            ajustarPantalla();
+        });
+    </script>
+</body>
+</html>
