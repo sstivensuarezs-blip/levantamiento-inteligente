@@ -3,126 +3,266 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Levantamiento Automático por Movimiento</title>
+    <title>Creador de Planos Unificados - Gran Angular 0.5x</title>
     <style>
         body { margin: 0; padding: 0; background: #111; font-family: sans-serif; color: #fff; overflow: hidden; }
-        #app { display: flex; flex-direction: column; width: 100vw; height: 100vh; }
-        #camera-area { width: 100%; height: 40vh; background: #000; position: relative; }
-        video { width: 100%; height: 100%; object-fit: cover; opacity: 0.6; }
-        #canvas-area { width: 100%; height: 60vh; background: #1a1a1a; position: relative; border-top: 2px solid #333; }
+        #app-container { display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+        
+        /* Área superior: Captura con cámara en Ultra Gran Angular */
+        #photo-area { width: 100%; height: 45vh; background: #222; position: relative; border-bottom: 2px solid #333; text-align: center; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; display: block; }
+        #preview-img { height: 100%; width: 100%; object-fit: contain; display: none; position: absolute; top: 0; left: 0; z-index: 2; }
+        
+        /* Botones de acción flotantes sobre la cámara */
+        #btn-snapshot { position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); background: #28a745; color: white; border: none; padding: 10px 20px; font-weight: bold; border-radius: 20px; z-index: 5; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+        #btn-retake { position: absolute; bottom: 15px; right: 15px; background: #6c757d; color: white; border: none; padding: 8px 15px; font-size: 11px; border-radius: 15px; z-index: 5; display: none; cursor: pointer; }
+        
+        /* Área inferior: Planta unificada amplia */
+        #canvas-area { width: 100%; height: 55vh; background: #151515; position: relative; }
         canvas { width: 100%; height: 100%; }
-        .status-bar { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 12px; border: 1px solid #444; z-index: 10; }
-        .controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 10; }
-        button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 14px; font-weight: bold; border-radius: 20px; cursor: pointer; }
-        #btn-win { background: #00a8ff; }
-        #btn-clear { background: #dc3545; }
+        
+        .panel-info { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.85); padding: 8px 16px; border-radius: 20px; font-size: 11px; border: 1px solid #444; z-index: 10; max-width: 80%; }
+        .controls { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: 95%; z-index: 10; }
+        
+        button { background: #333; color: white; border: 1px solid #555; padding: 8px 16px; font-size: 12px; font-weight: bold; border-radius: 15px; cursor: pointer; }
+        button.active { background: #007bff; border-color: #00a8ff; }
+        #btn-next-space { background: #ff9f43; border-color: #ff9f43; color: #000; }
+        #btn-reset { background: #dc3545; border-color: #bd2130; }
+        .marker { position: absolute; width: 10px; height: 10px; background: #007bff; border: 2px solid #fff; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 4; }
+        .marker.ventana-tipo { background: #00a8ff; }
     </style>
 </head>
 <body>
 
-    <div id="app">
-        <div id="camera-area">
-            <div class="status-bar">🎯 Modo: Rastreo de Muros Activo</div>
+    <div id="app-container">
+        <div id="photo-area">
             <video id="webcam" autoplay playsinline muted></video>
+            <img id="preview-img" alt="Foto congelada para marcar">
+            <button id="btn-snapshot">📸 Capturar Espacio (0.5x)</button>
+            <button id="btn-retake">🔄 Repetir Foto</button>
+            <div id="markers-container" style="position: absolute; width:100%; height:100%; top:0; left:0; z-index:3;"></div>
         </div>
+
         <div id="canvas-area">
-            <canvas id="plano"></canvas>
+            <div class="panel-info" id="status-text">Cargando cámara en gran angular...</div>
+            <canvas id="planoGeneral"></canvas>
+            
             <div class="controls">
-                <button id="btn-win">Marcar Ventana aquí</button>
-                <button id="btn-clear">Reiniciar</button>
+                <button id="mode-muro" class="active">Muro</button>
+                <button id="mode-ventana">Ventana</button>
+                <button id="btn-next-space">Siguiente Espacio ➡️</button>
+                <button id="btn-reset">Limpiar Todo</button>
             </div>
         </div>
     </div>
 
     <script>
         const video = document.getElementById('webcam');
-        const canvas = document.getElementById('plano');
+        const previewImg = document.getElementById('preview-img');
+        const btnSnapshot = document.getElementById('btn-snapshot');
+        const btnRetake = document.getElementById('btn-retake');
+        const photoArea = document.getElementById('photo-area');
+        const markersContainer = document.getElementById('markers-container');
+        const canvas = document.getElementById('planoGeneral');
         const ctx = canvas.getContext('2d');
-        
-        let puntos = [];
-        let xActual, yActual;
+        const statusText = document.getElementById('status-text');
 
-        async function iniciarCamara() {
+        let modoActual = 'muro';
+        let espacioContador = 1;
+        let planoGlobal = []; 
+        let espacioActual = { muros: [], ventanas: [] };
+        let localStream = null;
+
+        // INTELIGENCIA DE APERTURA: Forzar el lente Ultra Gran Angular (Zoom mínimo)
+        async function arrancarCamaraGranAngular() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+
+            // Configuraciones avanzadas para buscar el zoom mínimo de hardware
+            const constraints = {
+                video: {
+                    facingMode: { exact: "environment" },
+                    // "pan", "tilt" y "zoom" le indican al navegador móvil que busque configuraciones macro/angulares
+                    advanced: [{ zoom: 0.5 }, { focusMode: "continuous" }]
+                },
+                audio: false
+            };
+
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: "environment" } }, audio: false
-                });
-                video.srcObject = stream;
-            } catch (e) {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                video.srcObject = stream;
-            }
-        }
-
-        function ajustarLienzo() {
-            canvas.width = canvas.clientWidth;
-            canvas.height = canvas.clientHeight;
-            xActual = canvas.width / 2;
-            yActual = canvas.height * 0.7; // Empezar abajo al centro
-            puntos = [{ x: xActual, y: yActual, tipo: 'muro' }];
-            dibujarPlano();
-        }
-
-        // INTELIGENCIA POR SENSOR: Detecta el giro físico del teléfono en el espacio
-        window.addEventListener('deviceorientation', (event) => {
-            if (event.alpha === null) return; // Si no hay sensor disponible
-
-            // Usamos el giro horizontal (alpha) para calcular la dirección del muro
-            let alfaRad = (event.alpha * Math.PI) / 180;
-            
-            // Distancia de avance simulada por el tiempo de grabación
-            let velocidad = 0.4; 
-            
-            xActual += Math.sin(alfaRad) * velocidad;
-            yActual -= Math.cos(alfaRad) * velocidad;
-
-            // Restringir que no se salga de la pantalla
-            xActual = Math.max(10, Math.min(canvas.width - 10, xActual));
-            yActual = Math.max(10, Math.min(canvas.height - 10, yActual));
-
-            // Para evitar saturar, agregamos un punto estructural cada pocos cuadros
-            if (Math.random() < 0.15) {
-                puntos.push({ x: xActual, y: yActual, tipo: 'muro' });
-            }
-            dibujarPlano();
-        });
-
-        function dibujarPlano() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            if (puntos.length < 2) return;
-
-            // Dibujar la distribución de muros cortados en 2D puro
-            for (let i = 1; i < puntos.length; i++) {
-                ctx.beginPath();
-                ctx.moveTo(puntos[i-1].x, puntos[i-1].y);
-                ctx.lineTo(puntos[i].x, puntos[i].y);
-
-                if (puntos[i].tipo === 'ventana') {
-                    // Representación técnica 2D de ventana (Línea doble celeste)
-                    ctx.strokeStyle = '#00a8ff';
-                    ctx.lineWidth = 3;
-                    ctx.stroke();
-                } else {
-                    // Representación técnica 2D de muro grueso (Línea blanca sólida)
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.lineWidth = 6;
-                    ctx.stroke();
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = localStream;
+                statusText.innerText = `Espacio ${espacioContador}: Apunta con el lente amplio y toma la foto.`;
+            } catch (err) {
+                // Alternativa por si el dispositivo restringe el comando directo de zoom por software
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                    });
+                    video.srcObject = localStream;
+                    statusText.innerText = `Espacio ${espacioContador}: Lente trasero activo. Captura el contorno.`;
+                } catch(e) {
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = localStream;
+                    statusText.innerText = "Modo simulación de escritorio activado.";
                 }
             }
         }
 
-        document.getElementById('btn-win').addEventListener('click', () => {
-            puntos.push({ x: xActual, y: yActual, tipo: 'ventana' });
+        // Capturar el cuadro de la cámara al instante
+        btnSnapshot.addEventListener('click', () => {
+            const hiddenCanvas = document.createElement('canvas');
+            hiddenCanvas.width = video.videoWidth;
+            hiddenCanvas.height = video.videoHeight;
+            const hCtx = hiddenCanvas.getContext('2d');
+            hCtx.drawImage(video, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            
+            previewImg.src = hiddenCanvas.toDataURL('image/jpeg');
+            previewImg.style.display = 'block';
+            btnSnapshot.style.display = 'none';
+            btnRetake.style.display = 'block';
+            statusText.innerText = "Foto fijada. Toca los puntos para trazar los muros de este espacio.";
         });
 
-        document.getElementById('btn-clear').addEventListener('click', () => {
-            ajustarLienzo();
+        btnRetake.addEventListener('click', () => {
+            previewImg.style.display = 'none';
+            btnSnapshot.style.display = 'block';
+            btnRetake.style.display = 'none';
+            markersContainer.innerHTML = '';
+            espacioActual = { muros: [], ventanas: [] };
+            statusText.innerText = "Apunta de nuevo y congela la imagen.";
+            dibujarPlanoGeneral();
         });
 
-        window.addEventListener('resize', ajustarLienzo);
+        // Registrar toques en la imagen amplia
+        photoArea.addEventListener('click', (e) => {
+            if (previewImg.style.display !== 'block') return;
+
+            const rect = photoArea.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const pctX = x / rect.width;
+            const pctY = y / rect.height;
+
+            const marker = document.createElement('div');
+            marker.className = `marker ${modoActual === 'ventana' ? 'ventana-tipo' : ''}`;
+            marker.style.left = `${x}px`;
+            marker.style.top = `${y}px`;
+            markersContainer.appendChild(marker);
+
+            if (modoActual === 'muro') {
+                espacioActual.muros.push({ pctX, pctY });
+            } else {
+                espacioActual.ventanas.push({ pctX, pctY });
+            }
+
+            dibujarPlanoGeneral();
+        });
+
+        // Pasar al siguiente módulo de la casa
+        document.getElementById('btn-next-space').addEventListener('click', () => {
+            if (espacioActual.muros.length === 0) return;
+            
+            planoGlobal.push(JSON.parse(JSON.stringify(espacioActual)));
+            espacioActual = { muros: [], ventanas: [] };
+            espacioContador++;
+            
+            previewImg.style.display = 'none';
+            btnSnapshot.style.display = 'block';
+            btnRetake.style.display = 'none';
+            markersContainer.innerHTML = '';
+            
+            statusText.innerText = `¡Espacio guardado! Enfoca el ambiente ${espacioContador} con el lente amplio y captura.`;
+            dibujarPlanoGeneral();
+        });
+
+        function dibujarPlanoGeneral() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.save();
+            // Centramos y aplicamos escala 0.5 pura para ver todo el plano unificado gigante
+            ctx.translate(canvas.width / 4, canvas.height / 4); 
+            ctx.scale(0.5, 0.5);
+
+            // Rejilla técnica de fondo
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 2;
+            for(let i=-canvas.width; i<canvas.width*2; i+=40) { ctx.beginPath(); ctx.moveTo(i,-canvas.height); ctx.lineTo(i,canvas.height*2); ctx.stroke(); }
+            for(let j=-canvas.height; j<canvas.height*2; j+=40) { ctx.beginPath(); ctx.moveTo(-canvas.width,j); ctx.lineTo(canvas.width*2,j); ctx.stroke(); }
+
+            // Renderizar base unificada
+            planoGlobal.forEach(espacio => renderizarEstructuras(espacio));
+            renderizarEstructures(espacioActual);
+
+            ctx.restore();
+        }
+
+        function renderizarEstructuras(espacio) {
+            if (espacio.muros.length > 1) {
+                ctx.beginPath();
+                ctx.lineWidth = 14; 
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'round';
+
+                let x0 = espacio.muros[0].pctX * canvas.width * 2;
+                let y0 = espacio.muros[0].pctY * canvas.height * 2;
+                ctx.moveTo(x0, y0);
+
+                for (let i = 1; i < espacio.muros.length; i++) {
+                    let xi = espacio.muros[i].pctX * canvas.width * 2;
+                    let yi = espacio.muros[i].pctY * canvas.height * 2;
+                    ctx.lineTo(xi, yi);
+                }
+                ctx.stroke();
+            }
+
+            if (espacio.ventanas.length > 1) {
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = '#00a8ff';
+
+                for (let i = 0; i < espacio.ventanas.length; i += 2) {
+                    if (!espacio.ventanas[i+1]) break;
+                    let x1 = espacio.ventanas[i].pctX * canvas.width * 2;
+                    let y1 = espacio.ventanas[i].pctY * canvas.height * 2;
+                    let x2 = espacio.ventanas[i+1].pctX * canvas.width * 2;
+                    let y2 = espacio.ventanas[i+1].pctY * canvas.height * 2;
+
+                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(x1, y1 + 8); ctx.lineTo(x2, y2 + 8); ctx.stroke();
+                }
+            }
+        }
+
+        document.getElementById('mode-muro').addEventListener('click', function() {
+            modoActual = 'muro'; this.className = 'active';
+            document.getElementById('mode-ventana').className = '';
+        });
+
+        document.getElementById('mode-ventana').addEventListener('click', function() {
+            modoActual = 'ventana'; this.className = 'active';
+            document.getElementById('mode-muro').className = '';
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            planoGlobal = []; espacioActual = { muros: [], ventanas: [] };
+            espacioContador = 1; markersContainer.innerHTML = '';
+            btnSnapshot.style.display = 'block'; previewImg.style.display = 'none'; btnRetake.style.display = 'none';
+            statusText.innerText = "Plano borrado. Reiniciando escaneo.";
+            dibujarPlanoGeneral();
+        });
+
+        function adaptarLienzo() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            dibujarPlanoGeneral();
+        }
+
+        window.addEventListener('resize', adaptarLienzo);
         window.addEventListener('load', () => {
-            iniciarCamara();
-            ajustarLienzo();
+            arrancarCamaraGranAngular();
+            adaptarLienzo();
         });
     </script>
 </body>
